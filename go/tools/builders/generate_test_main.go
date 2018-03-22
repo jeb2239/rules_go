@@ -21,13 +21,13 @@ import (
 	"flag"
 	"fmt"
 	"go/ast"
+	"go/doc"
 	"go/parser"
 	"go/token"
 	"log"
 	"os"
 	"path/filepath"
-	"runtime"
-	"strconv"
+	"sort"
 	"strings"
 	"text/template"
 )
@@ -43,16 +43,32 @@ type CoverPackage struct {
 	Files  []CoverFile
 }
 
+type Import struct {
+	Name string
+	Path string
+}
+
+type TestCase struct {
+	Package string
+	Name    string
+}
+
+type Example struct {
+	Package   string
+	Name      string
+	Output    string
+	Unordered bool
+}
+
 // Cases holds template data.
 type Cases struct {
-	Package          string
-	RunDir           string
-	TestNames        []string
-	BenchmarkNames   []string
-	HasTestMain      bool
-	Version17        bool
-	Version18OrNewer bool
-	Cover            []*CoverPackage
+	RunDir     string
+	Imports    []*Import
+	Tests      []TestCase
+	Benchmarks []TestCase
+	Examples   []Example
+	TestMain   string
+	Cover      []*CoverPackage
 }
 
 var codeTpl = `
@@ -62,18 +78,12 @@ import (
 	"log"
 	"os"
 	"fmt"
-{{if .Version17}}
-	"regexp"
-{{end}}
+	"strconv"
 	"testing"
-{{if .Version18OrNewer}}
 	"testing/internal/testdeps"
-{{end}}
 
-{{if .TestNames}}
-	undertest "{{.Package}}"
-{{else if .BenchmarkNames}}
-	undertest "{{.Package}}"
+{{range $p := .Imports}}
+  {{$p.Name}} "{{$p.Path}}"
 {{end}}
 
 {{range $p := .Cover}}
@@ -81,16 +91,40 @@ import (
 {{end}}
 )
 
-var tests = []testing.InternalTest{
-{{range .TestNames}}
-	{"{{.}}", undertest.{{.}} },
+var allTests = []testing.InternalTest{
+{{range .Tests}}
+	{"{{.Name}}", {{.Package}}.{{.Name}} },
 {{end}}
 }
 
 var benchmarks = []testing.InternalBenchmark{
-{{range .BenchmarkNames}}
-	{"{{.}}", undertest.{{.}} },
+{{range .Benchmarks}}
+	{"{{.Name}}", {{.Package}}.{{.Name}} },
 {{end}}
+}
+
+var examples = []testing.InternalExample{
+{{range .Examples}}
+  {Name: "{{.Name}}", F: {{.Package}}.{{.Name}}, Output: {{printf "%q" .Output}}, Unordered: {{.Unordered}} },
+{{end}}
+}
+
+func testsInShard() []testing.InternalTest {
+	totalShards, err := strconv.Atoi(os.Getenv("TEST_TOTAL_SHARDS"))
+	if err != nil || totalShards <= 1 {
+		return allTests
+	}
+	shardIndex, err := strconv.Atoi(os.Getenv("TEST_SHARD_INDEX"))
+	if err != nil || shardIndex < 0 {
+		return allTests
+	}
+	tests := []testing.InternalTest{}
+	for i, t := range allTests {
+		if i % totalShards == shardIndex {
+			tests = append(tests, t)
+		}
+	}
+	return tests
 }
 
 func coverRegisterAll() testing.Cover {
@@ -153,42 +187,64 @@ func main() {
 		testing.RegisterCover(coverage)
 	}
 
-{{if .Version18OrNewer}}
-	m := testing.MainStart(testdeps.TestDeps{}, tests, benchmarks, nil)
-	{{if not .HasTestMain}}
+	if coverageDat, ok := os.LookupEnv("COVERAGE_OUTPUT_FILE"); ok {
+		if testing.CoverMode() != "" {
+			flag.Lookup("test.coverprofile").Value.Set(coverageDat)
+		}
+	}
+
+	m := testing.MainStart(testdeps.TestDeps{}, testsInShard(), benchmarks, examples)
+	{{if not .TestMain}}
 	os.Exit(m.Run())
 	{{else}}
-	undertest.TestMain(m)
+	{{.TestMain}}(m)
 	{{end}}
-{{else if .Version17}}
-	{{if not .HasTestMain}}
-	testing.Main(regexp.MatchString, tests, benchmarks, nil)
-	{{else}}
-	m := testing.MainStart(regexp.MatchString, tests, benchmarks, nil)
-	undertest.TestMain(m)
-	{{end}}
-{{end}}
 }
 `
 
 func run(args []string) error {
 	// Prepare our flags
 	cover := multiFlag{}
+	imports := multiFlag{}
+	sources := multiFlag{}
 	flags := flag.NewFlagSet("generate_test_main", flag.ExitOnError)
 	goenv := envFlags(flags)
-	pkg := flags.String("package", "", "package from which to import test methods.")
 	runDir := flags.String("rundir", ".", "Path to directory where tests should run.")
 	out := flags.String("output", "", "output file to write. Defaults to stdout.")
 	flags.Var(&cover, "cover", "Information about a coverage variable")
+	flags.Var(&imports, "import", "Packages to import")
+	flags.Var(&sources, "src", "Sources to process for tests")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if *pkg == "" {
-		return fmt.Errorf("must set --package.")
+	if err := goenv.update(); err != nil {
+		return err
 	}
+	// Process import args
+	importMap := map[string]*Import{}
+	for _, imp := range imports {
+		parts := strings.Split(imp, "=")
+		if len(parts) != 2 {
+			return fmt.Errorf("Invalid import %q specified", imp)
+		}
+		i := &Import{Name: parts[0], Path: parts[1]}
+		importMap[i.Name] = i
+	}
+	// Process source args
+	sourceList := []string{}
+	sourceMap := map[string]string{}
+	for _, s := range sources {
+		parts := strings.Split(s, "=")
+		if len(parts) != 2 {
+			return fmt.Errorf("Invalid source %q specified", s)
+		}
+		sourceList = append(sourceList, parts[1])
+		sourceMap[parts[1]] = parts[0]
+	}
+
 	// filter our input file list
 	bctx := goenv.BuildContext()
-	filenames, err := filterFiles(bctx, flags.Args())
+	filenames, err := filterFiles(bctx, sourceList)
 	if err != nil {
 		return err
 	}
@@ -204,9 +260,9 @@ func run(args []string) error {
 	}
 
 	cases := Cases{
-		Package: *pkg,
-		RunDir:  filepath.FromSlash(*runDir),
+		RunDir: strings.Replace(filepath.FromSlash(*runDir), `\`, `\\`, -1),
 	}
+
 	covered := map[string]*CoverPackage{}
 	for _, c := range cover {
 		bits := strings.SplitN(c, "=", 3)
@@ -230,12 +286,28 @@ func run(args []string) error {
 	}
 
 	testFileSet := token.NewFileSet()
+	pkgs := map[string]bool{}
 	for _, f := range filenames {
 		parse, err := parser.ParseFile(testFileSet, f, nil, parser.ParseComments)
 		if err != nil {
 			return fmt.Errorf("ParseFile(%q): %v", f, err)
 		}
-
+		pkg := sourceMap[f]
+		if strings.HasSuffix(parse.Name.String(), "_test") {
+			pkg += "_test"
+		}
+		for _, e := range doc.Examples(parse) {
+			if e.Output == "" && !e.EmptyOutput {
+				continue
+			}
+			cases.Examples = append(cases.Examples, Example{
+				Name:      "Example" + e.Name,
+				Package:   pkg,
+				Output:    e.Output,
+				Unordered: e.Unordered,
+			})
+			pkgs[pkg] = true
+		}
 		for _, d := range parse.Decls {
 			fn, ok := d.(*ast.FuncDecl)
 			if !ok {
@@ -246,7 +318,7 @@ func run(args []string) error {
 			}
 			if fn.Name.Name == "TestMain" {
 				// TestMain is not, itself, a test
-				cases.HasTestMain = true
+				cases.TestMain = fmt.Sprintf("%s.%s", pkg, fn.Name.Name)
 				continue
 			}
 
@@ -283,63 +355,36 @@ func run(args []string) error {
 				if selExpr.Sel.Name != "T" {
 					continue
 				}
-				cases.TestNames = append(cases.TestNames, fn.Name.Name)
+				pkgs[pkg] = true
+				cases.Tests = append(cases.Tests, TestCase{
+					Package: pkg,
+					Name:    fn.Name.Name,
+				})
 			}
 			if strings.HasPrefix(fn.Name.Name, "Benchmark") {
 				if selExpr.Sel.Name != "B" {
 					continue
 				}
-				cases.BenchmarkNames = append(cases.BenchmarkNames, fn.Name.Name)
+				pkgs[pkg] = true
+				cases.Benchmarks = append(cases.Benchmarks, TestCase{
+					Package: pkg,
+					Name:    fn.Name.Name,
+				})
 			}
 		}
 	}
-
-	goVersion, err := parseVersion(runtime.Version())
-	if err != nil {
-		return err
+	// Add only the imports we found tests for
+	for pkg := range pkgs {
+		cases.Imports = append(cases.Imports, importMap[pkg])
 	}
-	if goVersion.Less(version{1, 7}) {
-		return fmt.Errorf("go version %s not supported", runtime.Version())
-	} else if goVersion.Less(version{1, 8}) {
-		cases.Version17 = true
-	} else {
-		cases.Version18OrNewer = true
-	}
-
+	sort.Slice(cases.Imports, func(i, j int) bool {
+		return cases.Imports[i].Name < cases.Imports[j].Name
+	})
 	tpl := template.Must(template.New("source").Parse(codeTpl))
 	if err := tpl.Execute(outFile, &cases); err != nil {
 		return fmt.Errorf("template.Execute(%v): %v", cases, err)
 	}
 	return nil
-}
-
-type version []int
-
-func parseVersion(s string) (version, error) {
-	strParts := strings.Split(s[len("go"):], ".")
-	intParts := make([]int, len(strParts))
-	for i, s := range strParts {
-		v, err := strconv.Atoi(s)
-		if err != nil {
-			return nil, fmt.Errorf("non-number in go version: %s", s)
-		}
-		intParts[i] = v
-	}
-	return intParts, nil
-}
-
-func (x version) Less(y version) bool {
-	n := len(x)
-	if len(y) < n {
-		n = len(y)
-	}
-	for i := 0; i < n; i++ {
-		cmp := x[i] - y[i]
-		if cmp != 0 {
-			return cmp < 0
-		}
-	}
-	return len(x) < len(y)
 }
 
 func main() {

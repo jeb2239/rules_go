@@ -23,18 +23,73 @@ import (
 	"strings"
 )
 
+var (
+	// goBuildTags holds the build tags with which Go was built as a map.
+	// This is useful for detecting the presence of a particular build tag.
+	goBuildTags = map[string]bool{}
+
+	// goReleaseTags holds the release tags with which Go was built as a map.
+	// This is useful for detecting mininum required Go versions.
+	goReleaseTags = map[string]bool{}
+)
+
 // GoEnv holds the go environment as specified on the command line.
 type GoEnv struct {
 	// Go is the path to the go executable.
 	Go string
 	// Verbose debugging print control
-	Verbose  bool
-	rootFile string
-	rootPath string
-	cgo      bool
-	goos     string
-	goarch   string
-	tags     string
+	Verbose      bool
+	rootFile     string
+	rootPath     string
+	cgo          bool
+	compilerPath string
+	goos         string
+	goarch       string
+	tags         string
+	cc           string
+	cpp_flags    multiFlag
+	ld_flags     multiFlag
+	shared       bool
+}
+
+func init() {
+	for _, tag := range build.Default.BuildTags {
+		goBuildTags[tag] = true
+	}
+	for _, tag := range build.Default.ReleaseTags {
+		goReleaseTags[tag] = true
+	}
+}
+
+// abs returns the absolute representation of path. Some tools/APIs require
+// absolute paths to work correctly. Most notably, golang on Windows cannot
+// handle relative paths to files whose absolute path is > ~250 chars, while
+// it can handle absolute paths. See http://goo.gl/eqeWjm.
+func abs(path string) string {
+	if abs, err := filepath.Abs(path); err != nil {
+		return path
+	} else {
+		return abs
+	}
+}
+
+func envUpdate(oldEnv, newEnv []string) []string {
+	retEnvMap := map[string]string{}
+	retEnv := []string{}
+	for _, e := range oldEnv {
+		pair := strings.SplitN(e, "=", 2)
+		k, v := pair[0], pair[1]
+		retEnvMap[k] = v
+	}
+	for _, e := range newEnv {
+		pair := strings.SplitN(e, "=", 2)
+		k, v := pair[0], pair[1]
+		retEnvMap[k] = v
+	}
+	for k, v := range retEnvMap {
+		retEnv = append(retEnv, k+"="+v)
+	}
+	return retEnv
 }
 
 func envFlags(flags *flag.FlagSet) *GoEnv {
@@ -42,45 +97,78 @@ func envFlags(flags *flag.FlagSet) *GoEnv {
 	flags.StringVar(&env.Go, "go", "", "The path to the go tool.")
 	flags.StringVar(&env.rootFile, "root_file", "", "The go root file to use.")
 	flags.BoolVar(&env.cgo, "cgo", false, "The value for CGO_ENABLED.")
+	flags.StringVar(&env.compilerPath, "compiler_path", "", "The value for PATH.")
 	flags.StringVar(&env.goos, "goos", "", "The value for GOOS.")
 	flags.StringVar(&env.goarch, "goarch", "", "The value for GOARCH.")
 	flags.BoolVar(&env.Verbose, "v", false, "Enables verbose debugging prints.")
 	flags.StringVar(&env.tags, "tags", "", "Only pass through files that match these tags.")
+	flags.BoolVar(&env.shared, "shared", false, "Build in shared mode")
+	flags.StringVar(&env.cc, "cc", "", "Sets the c compiler to use")
+	flags.Var(&env.cpp_flags, "cpp_flag", "An entry to add to the c compiler flags")
+	flags.Var(&env.ld_flags, "ld_flag", "An entry to add to the c linker flags")
 	return env
 }
 
-func (env *GoEnv) absRoot() string {
-	if env.rootPath == "" {
+func (env *GoEnv) update() error {
+	if env.rootFile != "" {
+		env.rootFile = abs(env.rootFile)
 		env.rootPath = env.rootFile
-		if abs, err := filepath.Abs(env.rootPath); err == nil {
-			env.rootPath = abs
-		}
-		if s, err := os.Stat(env.rootPath); err == nil {
+		if s, err := os.Stat(env.rootFile); err == nil {
 			if !s.IsDir() {
-				env.rootPath = filepath.Dir(env.rootPath)
+				env.rootPath = filepath.Dir(env.rootFile)
 			}
 		}
 	}
-	return env.rootPath
+	if env.compilerPath != "" {
+		env.compilerPath = abs(env.compilerPath)
+	}
+	return nil
 }
 
 func (env *GoEnv) Env() []string {
+	return envUpdate(os.Environ(), env.env())
+}
+
+func (env *GoEnv) env() []string {
 	cgoEnabled := "0"
 	if env.cgo {
 		cgoEnabled = "1"
 	}
-	return []string{
-		fmt.Sprintf("GOROOT=%s", env.absRoot()),
-		fmt.Sprintf("TMP=%s", "/tmp"), // TODO: may need to be different on windows
+	result := []string{
+		fmt.Sprintf("GOROOT=%s", env.rootPath),
+		"GOROOT_FINAL=GOROOT",
 		fmt.Sprintf("GOOS=%s", env.goos),
 		fmt.Sprintf("GOARCH=%s", env.goarch),
 		fmt.Sprintf("CGO_ENABLED=%s", cgoEnabled),
+		fmt.Sprintf("PATH=%s", env.compilerPath),
+		fmt.Sprintf("COMPILER_PATH=%s", env.compilerPath),
 	}
+	if env.cc != "" {
+		cc := abs(env.cc)
+		result = append(result,
+			fmt.Sprintf("CC=%s", cc),
+			fmt.Sprintf("CXX=%s", cc),
+		)
+	}
+	if len(env.cpp_flags) > 0 {
+		v := strings.Join(env.cpp_flags, " ")
+		result = append(result,
+			fmt.Sprintf("CGO_CFLAGS=%s", v),
+			fmt.Sprintf("CGO_CPPFLAGS=%s", v),
+			fmt.Sprintf("CGO_CXXFLAGS=%s", v),
+		)
+	}
+	if len(env.ld_flags) > 0 {
+		result = append(result,
+			fmt.Sprintf("CGO_LDFLAGS=%s", strings.Join(env.ld_flags, " ")),
+		)
+	}
+	return result
 }
 
 func (env *GoEnv) BuildContext() build.Context {
 	bctx := build.Default
-	bctx.GOROOT = env.absRoot()
+	bctx.GOROOT = env.rootPath
 	bctx.GOOS = env.goos
 	bctx.GOARCH = env.goarch
 	bctx.CgoEnabled = env.cgo

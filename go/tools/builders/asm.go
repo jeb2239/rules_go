@@ -25,13 +25,16 @@ import (
 )
 
 func run(args []string) error {
-	// process the args
-	if len(args) < 2 {
-		return fmt.Errorf("Usage: asm -go gotool source.s -- <extra options>")
-	}
+	search := multiFlag{}
 	flags := flag.NewFlagSet("asm", flag.ExitOnError)
 	goenv := envFlags(flags)
+	flags.Var(&search, "I", "Search paths of a direct dependency")
+	trimpath := flags.String("trimpath", "", "The base of the paths to trim")
+	output := flags.String("o", "", "The output object file to write")
 	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if err := goenv.update(); err != nil {
 		return err
 	}
 	if len(flags.Args()) < 1 {
@@ -42,22 +45,27 @@ func run(args []string) error {
 
 	// filter our input file list
 	bctx := goenv.BuildContext()
-	matched, err := matchFile(bctx, source)
+	metadata, err := readGoMetadata(bctx, source, false)
 	if err != nil {
 		return err
 	}
-	if !matched {
+	if !metadata.matched {
 		source = os.DevNull
 	}
 	goargs := []string{"tool", "asm"}
+	if goenv.shared {
+		goargs = append(goargs, "-shared")
+	}
+	goargs = append(goargs, "-trimpath", abs(*trimpath), "-o", *output)
+	for _, path := range search {
+		goargs = append(goargs, "-I", abs(path))
+	}
 	goargs = append(goargs, remains...)
 	goargs = append(goargs, source)
-	env := os.Environ()
-	env = append(env, goenv.Env()...)
 	cmd := exec.Command(goenv.Go, goargs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = env
+	cmd.Env = goenv.Env()
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("error running assembler: %v", err)
 	}

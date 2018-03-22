@@ -13,17 +13,12 @@
 # limitations under the License.
 
 load("@io_bazel_rules_go//go/private:providers.bzl", "GoLibrary")
-
-DEFAULT_LIB = "go_default_library"
-VENDOR_PREFIX = "/vendor/"
-
-# Modes are documented in go/modes.rst#compilation-modes
-NORMAL_MODE = "normal"
-RACE_MODE = "race"
-STATIC_MODE = "static"
-
-compile_modes = (NORMAL_MODE, RACE_MODE)
-link_modes =  (NORMAL_MODE, RACE_MODE, STATIC_MODE)
+load("//go/private:skylib/lib/dicts.bzl", "dicts")
+load("//go/private:skylib/lib/paths.bzl", "paths")
+load("//go/private:skylib/lib/sets.bzl", "sets")
+load("//go/private:skylib/lib/shell.bzl", "shell")
+load("//go/private:skylib/lib/structs.bzl", "structs")
+load("@io_bazel_rules_go//go/private:mode.bzl", "mode_string")
 
 go_exts = [
     ".go",
@@ -56,6 +51,7 @@ c_exts = [
 ]
 
 go_filetype = FileType(go_exts + asm_exts)
+
 cc_hdr_filetype = FileType(hdr_exts)
 
 # Extensions of files we can build with the Go compiler or with cc_library.
@@ -73,73 +69,37 @@ def pkg_dir(workspace_root, package_name):
     return package_name
   return "."
 
-def dict_of(st):
-  """Converts struct objects into dictionaries."""
-  data = dict()
-  for key in dir(st):
-    value = getattr(st, key, None)
-    if value != None: # skip methods
-      data[key] = value
-  return data
-
-
 def split_srcs(srcs):
-  go = depset()
-  headers = depset()
-  asm = depset()
-  c = depset()
-  for src in srcs:
-    if any([src.basename.endswith(ext) for ext in go_exts]):
-      go += [src]
-    elif any([src.basename.endswith(ext) for ext in hdr_exts]):
-      headers += [src]
-    elif any([src.basename.endswith(ext) for ext in asm_exts]):
-      asm += [src]
-    elif any([src.basename.endswith(ext) for ext in c_exts]):
-      c += [src]
-    else:
-      fail("Unknown source type {0}".format(src.basename))
-  return struct(
-      go = go,
-      headers = headers,
-      asm = asm,
-      c = c,
+  sources = struct(
+    go = [],
+    asm = [],
+    headers = [],
+    c = [],
   )
+  ext_pairs = (
+    (sources.go, go_exts),
+    (sources.headers, hdr_exts),
+    (sources.asm, asm_exts),
+    (sources.c, c_exts),
+  )
+  extmap = {}
+  for outs, exts in ext_pairs:
+    for ext in exts:
+      ext = ext[1:] # strip the dot
+      if ext in extmap:
+        break
+      extmap[ext] = outs
+  for src in as_iterable(srcs):
+    extouts = extmap.get(src.extension)
+    if extouts == None:
+      fail("Unknown source type {0}".format(src.basename))
+    extouts.append(src)
+  return sources
 
 def join_srcs(source):
-  return depset() + source.go + source.headers + source.asm + source.c
+  return source.go + source.headers + source.asm + source.c
 
-
-def go_importpath(ctx):
-  """Returns the expected importpath of the go_library being built.
-
-  Args:
-    ctx: The skylark Context
-
-  Returns:
-    Go importpath of the library
-  """
-  path = ctx.attr.importpath
-  if path != "":
-    return path
-  if getattr(ctx.attr, "library", None):
-     path = ctx.attr.library[GoLibrary].importpath
-     if path:
-       return path
-  path = ctx.attr._go_prefix.go_prefix
-  if path.endswith("/"):
-    path = path[:-1]
-  if ctx.label.package:
-    path += "/" + ctx.label.package
-  if ctx.label.name != DEFAULT_LIB and not path.endswith(ctx.label.name):
-    path += "/" + ctx.label.name
-  if path.rfind(VENDOR_PREFIX) != -1:
-    path = path[len(VENDOR_PREFIX) + path.rfind(VENDOR_PREFIX):]
-  if path[0] == "/":
-    path = path[1:]
-  return path
-
-def env_execute(ctx, arguments, environment = None, **kwargs):
+def env_execute(ctx, arguments, environment = {}, **kwargs):
   """env_executes a command in a repository context. It prepends "env -i"
   to "arguments" before calling "ctx.execute".
 
@@ -147,8 +107,71 @@ def env_execute(ctx, arguments, environment = None, **kwargs):
   are removed from the environment. This should be preferred to "ctx.execut"e
   in most situations.
   """
+  if ctx.os.name.startswith('windows'):
+    return ctx.execute(arguments, environment=environment, **kwargs)
   env_args = ["env", "-i"]
-  if environment:
-    for k, v in environment.items():
-      env_args += ["%s=%s" % (k, v)]
-  return ctx.execute(env_args + arguments, **kwargs)
+  environment = dict(environment)
+  for var in ["TMP", "TMPDIR"]:
+    if var in ctx.os.environ and not var in environment:
+      environment[var] = ctx.os.environ[var]
+  for k, v in environment.items():
+    env_args.append("%s=%s" % (k, v))
+  arguments = env_args + arguments
+  return ctx.execute(arguments, **kwargs)
+
+def executable_extension(ctx):
+  extension = ""
+  if ctx.os.name.startswith('windows'):
+    extension = ".exe"
+  return extension
+
+def goos_to_extension(goos):
+  if goos == "windows":
+    return ".exe"
+  return ""
+
+ARCHIVE_EXTENSION = ".a"
+
+def goos_to_shared_extension(goos):
+  return {
+    "windows": ".dll",
+    "darwin": ".dylib",
+  }.get(goos, ".so")
+
+MINIMUM_BAZEL_VERSION = "0.8.0"
+
+def as_list(v):
+  if type(v) == "list":
+    return v
+  if type(v) == "tuple":
+    return list(v)
+  if type(v) == "depset":
+    return v.to_list()
+  fail("as_list failed on {}".format(v))
+
+def as_iterable(v):
+  if type(v) == "list":
+    return v
+  if type(v) == "tuple":
+    return v
+  if type(v) == "depset":
+    return v.to_list()
+  fail("as_iterator failed on {}".format(v))
+
+def as_tuple(v):
+  if type(v) == "tuple":
+    return v
+  if type(v) == "list":
+    return tuple(v)
+  if type(v) == "depset":
+    return tuple(v.to_list())
+  fail("as_tuple failed on {}".format(v))
+
+def as_set(v):
+  if type(v) == "depset":
+    return v
+  if type(v) == "list":
+    return depset(v)
+  if type(v) == "tuple":
+    return depset(v)
+  fail("as_tuple failed on {}".format(v))

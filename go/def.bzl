@@ -12,56 +12,91 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@io_bazel_rules_go//go/private:go_repository.bzl",
+load(
+    "@io_bazel_rules_go//go/private:context.bzl",
+    go_context = "go_context",
+)
+load(
+    "@io_bazel_rules_go//go/private:go_repository.bzl",
     "go_repository",
 )
-load("@io_bazel_rules_go//go/private:providers.bzl",
+load(
+    "@io_bazel_rules_go//go/private:providers.bzl",
     _GoLibrary = "GoLibrary",
-    _GoBinary = "GoBinary",
-    _GoEmbed = "GoEmbed",
+    _GoSource = "GoSource",
+    _GoPath = "GoPath",
+    _GoArchive = "GoArchive",
+    _GoArchiveData = "GoArchiveData",
 )
-load("@io_bazel_rules_go//go/private:repositories.bzl",
+load(
+    "@io_bazel_rules_go//go/private:repositories.bzl",
     "go_rules_dependencies",
     "go_register_toolchains",
 )
-load("@io_bazel_rules_go//go/private:toolchain.bzl",
-    go_host_sdk = "go_host_sdk",
+load(
+    "@io_bazel_rules_go//go/private:sdk.bzl",
     go_download_sdk = "go_download_sdk",
+    go_host_sdk = "go_host_sdk",
     go_local_sdk = "go_local_sdk",
-    go_sdk = "go_sdk", # DEPRECATED
+    go_sdk = "go_sdk",  # DEPRECATED
 )
-load("@io_bazel_rules_go//go/private:go_toolchain.bzl",
+load(
+    "@io_bazel_rules_go//go/private:go_toolchain.bzl",
     go_toolchain = "go_toolchain",
 )
-load("@io_bazel_rules_go//go/private:rules/prefix.bzl",
+load(
+    "@io_bazel_rules_go//go/private:rules/prefix.bzl",
     "go_prefix",
 )
-load("@io_bazel_rules_go//go/private:rules/wrappers.bzl",
-    _go_library_macro = "go_library_macro",
+load(
+    "@io_bazel_rules_go//go/private:rules/wrappers.bzl",
     _go_binary_macro = "go_binary_macro",
+    _go_library_macro = "go_library_macro",
     _go_test_macro = "go_test_macro",
 )
-load("@io_bazel_rules_go//go/private:tools/embed_data.bzl",
+load(
+    "@io_bazel_rules_go//go/private:rules/source.bzl",
+    _go_source = "go_source",
+)
+load(
+    "@io_bazel_rules_go//extras:embed_data.bzl",
     "go_embed_data",
 )
-load("@io_bazel_rules_go//go/private:tools/gazelle.bzl",
+load(
+    "@io_bazel_rules_go//go/private:tools/gazelle.bzl",
     "gazelle",
 )
-load("@io_bazel_rules_go//go/private:tools/path.bzl",
+load(
+    "@io_bazel_rules_go//go/private:tools/path.bzl",
     _go_path = "go_path",
 )
-load("@io_bazel_rules_go//go/private:tools/vet.bzl",
+load(
+    "@io_bazel_rules_go//go/private:tools/vet.bzl",
     _go_vet_test = "go_vet_test",
 )
+load(
+    "@io_bazel_rules_go//go/private:rules/rule.bzl",
+    _go_rule = "go_rule",
+)
+
+# Current version or next version to be tagged. Gazelle and other tools may
+# check this to determine compatibility.
+RULES_GO_VERSION = "0.11.0"
 
 GoLibrary = _GoLibrary
 """See go/providers.rst#GoLibrary for full documentation."""
 
-GoBinary = _GoBinary
-"""See go/providers.rst#GoBinary for full documentation."""
+GoSource = _GoSource
+"""See go/providers.rst#GoSource for full documentation."""
 
-GoEmbed = _GoEmbed
-"""See go/providers.rst#GoEmbed for full documentation."""
+GoPath = _GoPath
+"""See go/providers.rst#GoPath for full documentation."""
+
+GoArchive = _GoArchive
+"""See go/providers.rst#GoArchive for full documentation."""
+
+GoArchiveData = _GoArchiveData
+"""See go/providers.rst#GoArchiveData for full documentation."""
 
 go_library = _go_library_macro
 """See go/core.rst#go_library for full documentation."""
@@ -71,6 +106,12 @@ go_binary = _go_binary_macro
 
 go_test = _go_test_macro
 """See go/core.rst#go_test for full documentation."""
+
+go_source = _go_source
+"""See go/core.rst#go_test for full documentation."""
+
+go_rule = _go_rule
+"""See go/core.rst#go_rule for full documentation."""
 
 go_path = _go_path
 """
@@ -84,7 +125,6 @@ go_vet_test = _go_vet_test
 """
     go_vet_test
 """
-
 
 # Compatability shims
 def cgo_genrule(name, tags=[], **kwargs):
@@ -110,4 +150,3 @@ def go_repositories(
     go_register_toolchains(go_version=go_version)
   else:
     go_register_toolchains()
-

@@ -12,34 +12,42 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@io_bazel_rules_go//go/private:actions/action.bzl",
-    "action_with_go_env",
+load(
+    "@io_bazel_rules_go//go/private:providers.bzl",
+    "GoSource",
+)
+load(
+    "@io_bazel_rules_go//go/private:common.bzl",
+    "structs",
 )
 
-def emit_cover(ctx, go_toolchain,
-               sources = []):
+def emit_cover(go, source):
   """See go/toolchains.rst#cover for full documentation."""
-  outputs = []
-  # TODO(linuxerwang): make the mode configurable.
+
+  if source == None: fail("source is a required parameter")
+  if not source.cover:
+    return source, []
+
+  covered = []
   cover_vars = []
-
-  for src in sources:
-    if (not src.basename.endswith(".go") or
-        src.basename.endswith("_test.go") or
-        src.basename.endswith(".cover.go")):
-      outputs += [src]
+  for src in source.srcs:
+    if not src.basename.endswith(".go") or src not in source.cover:
+      covered.append(src)
       continue
-
     cover_var = "Cover_" + src.basename[:-3].replace("-", "_").replace(".", "_")
-    cover_vars += ["{}={}".format(cover_var,src.short_path)]
-    out = ctx.new_file(cover_var + '.cover.go')
-    outputs += [out]
-    action_with_go_env(ctx, go_toolchain,
-        inputs = [src],
+    cover_vars.append("{}={}={}".format(cover_var, src.short_path, source.library.importpath))
+    out = go.declare_file(go, path=cover_var, ext='.cover.go')
+    covered.append(out)
+    args = go.args(go)
+    args.add(["--", "--mode=set", "-var=%s" % cover_var, "-o", out, src])
+    go.actions.run(
+        inputs = [src] + go.stdlib.files,
         outputs = [out],
         mnemonic = "GoCover",
-        executable = go_toolchain.tools.cover,
-        arguments = ["--", "--mode=set", "-var=%s" % cover_var, "-o", out.path, src.path],
+        executable = go.builders.cover,
+        arguments = [args],
+        env = go.env,
     )
-
-  return outputs, tuple(cover_vars)
+  members = structs.to_dict(source)
+  members["srcs"] = covered
+  return GoSource(**members), cover_vars

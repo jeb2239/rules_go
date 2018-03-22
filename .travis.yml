@@ -2,7 +2,7 @@
 dist: trusty
 sudo: required
 # xcode8 has jdk8
-osx_image: xcode8
+osx_image: xcode8.3
 # Not technically required but suppresses 'Ruby' in Job status message.
 language: java
 
@@ -13,7 +13,7 @@ os:
 env:
   # TODO(bazelbuild/continuous-integration#95): re-enable HEAD builds with stable URL
   # - V=HEAD
-  - V=0.6.0
+  - V=0.10.0
 
 before_install:
   - |
@@ -52,13 +52,12 @@ script:
       --batch \
       --host_jvm_args=-Xmx500m \
       --host_jvm_args=-Xms500m \
-      --bazelrc=.test-bazelrc \
       test \
+      --config=ci \
       --experimental_repository_cache="$HOME/.bazel_repository_cache" \
       --local_resources=400,1,1.0 \
       --test_tag_filters=-dev \
       //...
-  - tests/run_non_bazel_tests.bash ci
 
 notifications:
   email: false

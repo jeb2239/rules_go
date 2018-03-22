@@ -40,15 +40,24 @@ func run(args []string) error {
 		linkargs = append(linkargs, s)
 	}
 	// process the flags for this link wrapper
+	xstamps := multiFlag{}
 	xdefs := multiFlag{}
 	stamps := multiFlag{}
 	linkstamps := multiFlag{}
+	libPaths := multiFlag{}
 	flags := flag.NewFlagSet("link", flag.ExitOnError)
 	goenv := envFlags(flags)
-	flags.Var(&xdefs, "X", "A link xdef that may need stamping.")
+	outFile := flags.String("out", "", "Path to output file.")
+	buildmode := flags.String("buildmode", "", "Build mode used.")
+	flags.Var(&xstamps, "Xstamp", "A link xdef that may need stamping.")
+	flags.Var(&xdefs, "Xdef", "A link xdef that may need stamping.")
+	flags.Var(&libPaths, "L", "A library search path.")
 	flags.Var(&stamps, "stamp", "The name of a file with stamping values.")
 	flags.Var(&linkstamps, "linkstamp", "A package that requires link stamping.")
 	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if err := goenv.update(); err != nil {
 		return err
 	}
 	goargs := []string{"tool", "link"}
@@ -75,7 +84,13 @@ func run(args []string) error {
 		}
 	}
 	// generate any additional link options we need
+	for _, l := range libPaths {
+		goargs = append(goargs, "-L", l)
+	}
 	for _, xdef := range xdefs {
+		goargs = append(goargs, "-X", xdef)
+	}
+	for _, xdef := range xstamps {
 		split := strings.SplitN(xdef, "=", 2)
 		if len(split) != 2 {
 			continue
@@ -92,17 +107,29 @@ func run(args []string) error {
 		}
 	}
 
+	if *buildmode != "" {
+		goargs = append(goargs, "-buildmode", *buildmode)
+	}
+	goargs = append(goargs, "-o", *outFile)
+
+	goargs = append(goargs, "-extldflags", strings.Join(goenv.ld_flags, " "))
+
 	// add in the unprocess pass through options
 	goargs = append(goargs, goopts...)
-	env := os.Environ()
-	env = append(env, goenv.Env()...)
 	cmd := exec.Command(goenv.Go, goargs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = env
+	cmd.Env = goenv.Env()
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("error running linker: %v", err)
 	}
+
+	if *buildmode == "c-archive" {
+		if err := stripArMetadata(*outFile); err != nil {
+			return fmt.Errorf("error stripping archive metadata: %v", err)
+		}
+	}
+
 	return nil
 }
 

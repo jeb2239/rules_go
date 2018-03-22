@@ -12,6 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load(
+    "@io_bazel_rules_go//go/private:context.bzl",
+    "go_context",
+)
+load(
+    "@io_bazel_rules_go//go/private:rules/rule.bzl",
+    "go_rule",
+)
+
 _script_content = """
 BASE=$(pwd)
 WORKSPACE=$(dirname $(readlink WORKSPACE))
@@ -20,8 +29,11 @@ $BASE/{gazelle} {args} $@
 """
 
 def _gazelle_script_impl(ctx):
+  # TODO(jayconrod): add a fix to Gazelle to replace invocations of this rule
+  # with the new one in @bazel_gazelle. Once in place, fail here.
+  go = go_context(ctx)
   prefix = ctx.attr.prefix if ctx.attr.prefix else ctx.attr._go_prefix.go_prefix
-  args = [ctx.attr.command] + ctx.attr.args
+  args = [ctx.attr.command]
   args += [
       "-repo_root", "$WORKSPACE",
       "-go_prefix", prefix,
@@ -30,9 +42,10 @@ def _gazelle_script_impl(ctx):
   ]
   if ctx.attr.build_tags:
     args += ["-build_tags", ",".join(ctx.attr.build_tags)]
+  args += ctx.attr.args
   script_content = _script_content.format(gazelle=ctx.file._gazelle.short_path, args=" ".join(args))
-  script_file = ctx.new_file(ctx.label.name+".bash")
-  ctx.file_action(output=script_file, executable=True, content=script_content)
+  script_file = go.declare_file(go, ext=".bash")
+  ctx.actions.write(output=script_file, is_executable=True, content=script_content)
   return struct(
     files = depset([script_file]),
     runfiles = ctx.runfiles([ctx.file._gazelle])
@@ -43,24 +56,43 @@ def _go_prefix_default(prefix):
           if prefix
           else Label("//:go_prefix", relative_to_caller_repository = True))
 
-_gazelle_script = rule(
+_gazelle_script = go_rule(
     _gazelle_script_impl,
     attrs = {
-        "command": attr.string(values=["update", "fix"], default="update"),
-        "mode": attr.string(values=["print", "fix", "diff"], default="fix"),
-        "external": attr.string(values=["external", "vendored"], default="external"),
+        "command": attr.string(
+            values = [
+                "update",
+                "fix",
+            ],
+            default = "update",
+        ),
+        "mode": attr.string(
+            values = [
+                "print",
+                "fix",
+                "diff",
+            ],
+            default = "fix",
+        ),
+        "external": attr.string(
+            values = [
+                "external",
+                "vendored",
+            ],
+            default = "external",
+        ),
         "build_tags": attr.string_list(),
         "args": attr.string_list(),
         "prefix": attr.string(),
         "_gazelle": attr.label(
-            default = Label("@io_bazel_rules_go//go/tools/gazelle/gazelle:gazelle"),
+            default = Label("@bazel_gazelle//cmd/gazelle"),
             allow_files = True,
             single_file = True,
             executable = True,
-            cfg = "host"
+            cfg = "host",
         ),
         "_go_prefix": attr.label(default = _go_prefix_default),
-    }
+    },
 )
 
 def gazelle(name, **kwargs):

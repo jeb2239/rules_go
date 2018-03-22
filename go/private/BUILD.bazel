@@ -1,24 +1,7 @@
-load("@io_bazel_rules_go//go/private:go_toolchain.bzl", "go_toolchain_flags")
-
 filegroup(
     name = "all_rules",
     srcs = glob(["**/*.bzl"]),
     visibility = ["//visibility:public"],
-)
-
-config_setting(
-    name = "fastbuild",
-    values = {"compilation_mode": "fastbuild"},
-)
-
-config_setting(
-    name = "debug",
-    values = {"compilation_mode": "dbg"},
-)
-
-config_setting(
-    name = "optimized",
-    values = {"compilation_mode": "opt"},
 )
 
 config_setting(
@@ -35,20 +18,3 @@ config_setting(
     name = "strip-never",
     values = {"strip": "never"},
 )
-
-go_toolchain_flags(
-    name = "go_toolchain_flags",
-    compilation_mode = select({
-        "@io_bazel_rules_go//go/private:fastbuild": "fastbuild",
-        "@io_bazel_rules_go//go/private:debug": "debug",
-        "@io_bazel_rules_go//go/private:optimized": "optimized",
-    }),
-    strip = select({
-        "@io_bazel_rules_go//go/private:strip-always": "always",
-        "@io_bazel_rules_go//go/private:strip-sometimes": "sometimes",
-        "@io_bazel_rules_go//go/private:strip-never": "never",
-    }),
-    visibility = ["//visibility:public"],
-)
-
-

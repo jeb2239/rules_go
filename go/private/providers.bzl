@@ -12,48 +12,62 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-GoLibrary = provider()
-"""See go/providers.rst#GoLibrary for full documentation."""
+load("@io_bazel_rules_go//go/private:mode.bzl", "mode_string")
 
-GoBinary = provider()
-"""See go/providers.rst#GoBinary for full documentation."""
+GoLibrary = provider()
+"""
+A represenatation of the inputs to a go package.
+This is a configuration independent provider.
+You must call resolve with a mode to produce a GoSource.
+See go/providers.rst#GoLibrary for full documentation.
+"""
+
+GoSource = provider()
+"""
+The filtered inputs and dependencies needed to build a GoArchive
+This is a configuration specific provider.
+It has no transitive information.
+See go/providers.rst#GoSource for full documentation.
+"""
+
+GoArchiveData = provider()
+"""
+This compiled form of a package used in transitive dependencies.
+This is a configuration specific provider.
+See go/providers.rst#GoArchiveData for full documentation.
+"""
+
+GoArchive = provider()
+"""
+The compiled form of a GoLibrary, with everything needed to link it into a binary.
+This is a configuration specific provider.
+See go/providers.rst#GoArchive for full documentation.
+"""
+
+GoAspectProviders = provider()
 
 GoPath = provider()
 
-GoEmbed = provider()
-"""See go/providers.rst#GoEmbed for full documentation."""
-
-CgoInfo = provider()
 GoStdLib = provider()
 
-def library_attr(mode):
-  """Returns the attribute name for the library of the given mode.
+GoBuilders = provider()
 
-  mode must be one of the common.bzl#compile_modes
-  """
-  return mode+"_library"
+def new_aspect_provider(source = None, archive = None):
+  return GoAspectProviders(
+      source = source,
+      archive = archive,
+  )
 
-def get_library(golib, mode):
-  """Returns the compiled library for the given mode
+def get_source(dep):
+  if type(dep) == "struct":
+    return dep
+  if GoAspectProviders in dep:
+    return dep[GoAspectProviders].source
+  return dep[GoSource]
 
-  golib must be a GoLibrary
-  mode must be one of the common.bzl#compile_modes
-  """
-  return getattr(golib, library_attr(mode))
-
-def searchpath_attr(mode):
-  """Returns the search path for the given mode
-
-  mode must be one of the common.bzl#compile_modes
-  """
-  return mode+"_searchpath"
-
-def get_searchpath(golib, mode):
-  """Returns the search path for the given mode
-
-  golib must be a GoLibrary
-  mode must be one of the common.bzl#compile_modes
-  """
-  return getattr(golib, searchpath_attr(mode))
-
-
+def get_archive(dep):
+  if type(dep) == "struct":
+    return dep
+  if GoAspectProviders in dep:
+    return dep[GoAspectProviders].archive
+  return dep[GoArchive]

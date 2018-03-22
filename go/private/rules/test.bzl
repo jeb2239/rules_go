@@ -12,27 +12,45 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@io_bazel_rules_go//go/private:common.bzl",
+load(
+    "@io_bazel_rules_go//go/private:context.bzl",
+    "go_context",
+    "EXPORT_PATH",
+)
+load(
+    "@io_bazel_rules_go//go/private:common.bzl",
     "go_filetype",
-    "go_importpath",
     "split_srcs",
     "pkg_dir",
-    "NORMAL_MODE",
-    "RACE_MODE",
 )
-load("@io_bazel_rules_go//go/private:rules/prefix.bzl",
+load(
+    "@io_bazel_rules_go//go/private:rules/prefix.bzl",
     "go_prefix_default",
 )
-load("@io_bazel_rules_go//go/private:rules/binary.bzl", "gc_linkopts")
-load("@io_bazel_rules_go//go/private:providers.bzl",
-    "CgoInfo",
+load(
+    "@io_bazel_rules_go//go/private:rules/binary.bzl",
+    "gc_linkopts",
+)
+load(
+    "@io_bazel_rules_go//go/private:providers.bzl",
     "GoLibrary",
-    "GoBinary",
-    "GoEmbed",
+    "get_archive",
 )
-load("@io_bazel_rules_go//go/private:actions/action.bzl",
-    "action_with_go_env",
+load(
+    "@io_bazel_rules_go//go/private:rules/aspect.bzl",
+    "go_archive_aspect",
 )
+load(
+    "@io_bazel_rules_go//go/private:rules/rule.bzl",
+    "go_rule",
+)
+load(
+    "@io_bazel_rules_go//go/private:mode.bzl",
+    "LINKMODE_NORMAL",
+)
+
+def _testmain_library_to_source(go, attr, source, merge):
+  source["deps"] = source["deps"] + [attr.library]
 
 def _go_test_impl(ctx):
   """go_test_impl implements go testing.
@@ -40,22 +58,29 @@ def _go_test_impl(ctx):
   It emits an action to run the test generator, and then compiles the
   test into a binary."""
 
-  go_toolchain = ctx.toolchains["@io_bazel_rules_go//go:toolchain"]
-  embed = ctx.attr.embed
-  if ctx.attr.library:
-    embed = embed + [ctx.attr.library]
-  cgo_info = ctx.attr.cgo_info[CgoInfo] if ctx.attr.cgo_info else None
+  go = go_context(ctx)
+  if ctx.attr.linkstamp:
+    print("DEPRECATED: linkstamp, please use x_def for all stamping now {}".format(ctx.attr.linkstamp))
 
-  # first build the test library
-  golib, _ = go_toolchain.actions.library(ctx,
-      go_toolchain = go_toolchain,
-      srcs = ctx.files.srcs,
-      deps = ctx.attr.deps,
-      cgo_info = cgo_info,
-      embed = embed,
-      importpath = go_importpath(ctx),
-      importable = False,
+  # Compile the library to test with internal white box tests
+  internal_library = go.new_library(go, testfilter="exclude")
+  internal_source = go.library_to_source(go, ctx.attr, internal_library, ctx.coverage_instrumented())
+  internal_archive = go.archive(go, internal_source)
+  go_srcs = split_srcs(internal_source.srcs).go
+
+  # Compile the library with the external black box tests
+  external_library = go.new_library(go,
+      name = internal_library.name + "_test",
+      importpath = internal_library.importpath + "_test",
+      testfilter="only",
   )
+  external_source = go.library_to_source(go, struct(
+      srcs = [struct(files=go_srcs)],
+      deps = internal_archive.direct + [internal_archive],
+      x_defs = ctx.attr.x_defs,
+  ), external_library, False)
+  external_archive = go.archive(go, external_source)
+  external_srcs = split_srcs(external_source.srcs).go
 
   # now generate the main function
   if ctx.attr.rundir:
@@ -66,65 +91,77 @@ def _go_test_impl(ctx):
   else:
     run_dir = pkg_dir(ctx.label.workspace_root, ctx.label.package)
 
-  go_srcs = list(split_srcs(golib.srcs).go)
-  main_go = ctx.new_file(ctx.label.name + "_main_test.go")
-  arguments = [
-      '--package',
-      golib.importpath,
-      '--rundir',
-      run_dir,
-      '--output',
-      main_go.path,
-  ]
-  cover_vars = []
-  covered_libs = []
-  for g in depset([golib]) + golib.transitive:
-    if g.cover_vars:
-      covered_libs += [g]
-      for var in g.cover_vars:
-        arguments += ["-cover", "{}={}".format(var, g.importpath)]
-
-  action_with_go_env(ctx, go_toolchain,
+  main_go = go.declare_file(go, "testmain.go")
+  arguments = go.args(go)
+  arguments.add(['-rundir', run_dir, '-output', main_go])
+  arguments.add([
+      # the l is the alias for the package under test, the l_test must be the
+      # same with the test suffix
+      '-import', "l="+internal_source.library.importpath,
+      '-import', "l_test="+external_source.library.importpath])
+  arguments.add(external_archive.cover_vars, before_each="-cover")
+  arguments.add(go_srcs, before_each="-src", format="l=%s")
+  ctx.actions.run(
       inputs = go_srcs,
       outputs = [main_go],
       mnemonic = "GoTestGenTest",
-      executable = go_toolchain.tools.test_generator,
-      arguments = arguments + [src.path for src in go_srcs],
+      executable = go.builders.test_generator,
+      arguments = [arguments],
       env = {
           "RUNDIR" : ctx.label.package,
       },
   )
 
   # Now compile the test binary itself
-  main_lib, main_binary = go_toolchain.actions.binary(ctx, go_toolchain,
+  test_library = GoLibrary(
+      name = go._ctx.label.name + "~testmain",
+      label = go._ctx.label,
+      importpath = "testmain",
+      importmap = "testmain",
+      pathtype = EXPORT_PATH,
+      resolve = None,
+  )
+  test_source = go.library_to_source(go, struct(
+      srcs = [struct(files=[main_go])],
+      deps = external_archive.direct + [external_archive],
+  ), test_library, False)
+  test_archive, executable = go.binary(go,
       name = ctx.label.name,
-      srcs = [main_go],
-      importpath = ctx.label.name + "~testmain~",
+      source = test_source,
       gc_linkopts = gc_linkopts(ctx),
-      golibs = [golib] + covered_libs,
-      default=ctx.outputs.executable,
-      x_defs=ctx.attr.x_defs,
+      linkstamp=ctx.attr.linkstamp,
+      version_file=ctx.version_file,
+      info_file=ctx.info_file,
   )
 
-  # TODO(bazel-team): the Go tests should do a chdir to the directory
-  # holding the data files, so open-source go tests continue to work
-  # without code changes.
-  runfiles = ctx.runfiles(files = [main_binary.default])
-  runfiles = runfiles.merge(golib.runfiles)
-  return [
-      main_binary,
-      DefaultInfo(
-          files = depset([main_binary.default]),
-          runfiles = runfiles,
-      ),
-      OutputGroupInfo(
-          normal = depset([main_binary.normal]),
-          static = depset([main_binary.static]),
-          race = depset([main_binary.race]),
-      ),
-]
+  runfiles = ctx.runfiles(files = [executable])
+  runfiles = runfiles.merge(test_archive.runfiles)
 
-go_test = rule(
+  # Bazel only looks for coverage data if the test target has an
+  # InstrumentedFilesProvider, but this provider can currently only be
+  # created using "legacy" provider syntax. Old and new provider syntaxes
+  # can be combined by putting new-style providers in a providers field
+  # of the old-style struct.
+  # If the provider is found and at least one source file is present, Bazel
+  # will set the COVERAGE_OUTPUT_FILE environment variable during tests
+  # and will save that file to the build events + test outputs.
+  return struct(
+      providers = [
+          DefaultInfo(
+              files = depset([executable]),
+              runfiles = runfiles,
+              executable = executable,
+          ),
+      ],
+      instrumented_files = struct(
+          extensions = ['go'],
+          source_attributes = ['srcs'],
+          dependency_attributes = ['deps', 'embed'],
+      ),
+  )
+
+
+go_test = go_rule(
     _go_test_impl,
     attrs = {
         "data": attr.label_list(
@@ -132,21 +169,54 @@ go_test = rule(
             cfg = "data",
         ),
         "srcs": attr.label_list(allow_files = go_filetype),
-        "deps": attr.label_list(providers = [GoLibrary]),
-        "importpath": attr.string(),
-        "library": attr.label(providers = [GoLibrary]),
-        "embed": attr.label_list(providers = [GoEmbed]),
+        "deps": attr.label_list(
+            providers = [GoLibrary],
+            aspects = [go_archive_aspect],
+        ),
+        "embed": attr.label_list(
+            providers = [GoLibrary],
+            aspects = [go_archive_aspect],
+        ),
+        "pure": attr.string(
+            values = [
+                "on",
+                "off",
+                "auto",
+            ],
+            default = "auto",
+        ),
+        "static": attr.string(
+            values = [
+                "on",
+                "off",
+                "auto",
+            ],
+            default = "auto",
+        ),
+        "race": attr.string(
+            values = [
+                "on",
+                "off",
+                "auto",
+            ],
+            default = "auto",
+        ),
+        "msan": attr.string(
+            values = [
+                "on",
+                "off",
+                "auto",
+            ],
+            default = "auto",
+        ),
         "gc_goopts": attr.string_list(),
         "gc_linkopts": attr.string_list(),
         "linkstamp": attr.string(),
         "rundir": attr.string(),
         "x_defs": attr.string_dict(),
-        "cgo_info": attr.label(providers = [CgoInfo]),
-        "_go_prefix": attr.label(default = go_prefix_default),
-        "_go_toolchain_flags": attr.label(default=Label("@io_bazel_rules_go//go/private:go_toolchain_flags")),
+        "linkmode": attr.string(default=LINKMODE_NORMAL),
     },
     executable = True,
     test = True,
-    toolchains = ["@io_bazel_rules_go//go:toolchain"],
 )
 """See go/core.rst#go_test for full documentation."""

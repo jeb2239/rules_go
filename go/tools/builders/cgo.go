@@ -20,66 +20,34 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"unicode"
 )
 
-func testCgo(src string, data []byte) (bool, string, error) {
-	fset := token.NewFileSet()
-	parsed, err := parser.ParseFile(fset, src, data, parser.ImportsOnly)
-	if err != nil {
-		return false, "", err
-	}
-	for _, decl := range parsed.Decls {
-		d, ok := decl.(*ast.GenDecl)
-		if !ok {
-			continue
-		}
-		for _, dspec := range d.Specs {
-			spec, ok := dspec.(*ast.ImportSpec)
-			if !ok {
-				continue
-			}
-			imp, err := strconv.Unquote(spec.Path.Value)
-			if err != nil {
-				log.Panicf("%s: invalid string `%s`", src, spec.Path.Value)
-			}
-			if imp == "C" {
-				return true, parsed.Name.String(), nil
-			}
-		}
-	}
-	return false, parsed.Name.String(), nil
-}
-
 func run(args []string) error {
 	sources := multiFlag{}
-	cc := ""
-	objdir := ""
+	objDir := ""
 	dynout := ""
 	dynimport := ""
 	flags := flag.NewFlagSet("cgo", flag.ContinueOnError)
 	goenv := envFlags(flags)
 	flags.Var(&sources, "src", "A source file to be filtered and compiled")
-	flags.StringVar(&cc, "cc", "", "Sets the c compiler to use")
-	flags.StringVar(&objdir, "objdir", "", "The output directory")
+	flags.StringVar(&objDir, "objdir", "", "The output directory")
 	flags.StringVar(&dynout, "dynout", "", "The output directory")
 	flags.StringVar(&dynimport, "dynimport", "", "The output directory")
 	// process the args
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	env := os.Environ()
-	env = append(env, goenv.Env()...)
+	if err := goenv.update(); err != nil {
+		return err
+	}
+	env := goenv.Env()
 
 	if len(dynout) > 0 {
 		dynpackage, err := extractPackage(sources[0])
@@ -102,10 +70,20 @@ func run(args []string) error {
 		return nil
 	}
 
+	// create a temporary directory. sources actually passed to cgo will be moved
+	// here first so that we can use -srcdir to avoid very long mangled filenames.
+	srcDir, err := ioutil.TempDir("", "srcdir")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(srcDir)
+
 	// apply build constraints to the source list
 	// also pick out the cgo sources
 	bctx := goenv.BuildContext()
+	bctx.CgoEnabled = true
 	cgoSrcs := []string{}
+	cgoOuts := []string{}
 	pkgName := ""
 	for _, s := range sources {
 		bits := strings.SplitN(s, "=", 2)
@@ -119,14 +97,14 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		match, err := matchFile(bctx, in)
+		metadata, err := readGoMetadata(bctx, in, true)
 		if err != nil {
 			return err
 		}
 		// if this is not a go file, it cannot be cgo, so just check the filter
 		if !strings.HasSuffix(in, ".go") {
 			// Not a go file, just filter, assume C or C-like
-			if match {
+			if metadata.matched {
 				// not filtered, copy over
 				if err := ioutil.WriteFile(out, data, 0644); err != nil {
 					return err
@@ -142,17 +120,13 @@ func run(args []string) error {
 
 		// Go source, must produce both c and go outputs
 		cOut := strings.TrimSuffix(out, ".cgo1.go") + ".cgo2.c"
-		isCgo, pkg, err := testCgo(in, data)
-		if err != nil {
-			return err
-		}
-		if pkg == "" {
-			return fmt.Errorf("%s: error: could not parse package name", in)
-		}
 
-		if !match {
+		if !metadata.matched {
+			if metadata.pkg == "" {
+				return fmt.Errorf("%s: error: could not parse package name", in)
+			}
 			// filtered file, fake both the go and the c
-			if err := ioutil.WriteFile(out, []byte("package "+pkg), 0644); err != nil {
+			if err := ioutil.WriteFile(out, []byte("package "+metadata.pkg), 0644); err != nil {
 				return err
 			}
 			if err := ioutil.WriteFile(cOut, []byte(""), 0644); err != nil {
@@ -161,14 +135,20 @@ func run(args []string) error {
 			continue
 		}
 
-		if pkgName != "" && pkg != pkgName {
-			return fmt.Errorf("multiple packages found: %s and %s", pkgName, pkg)
+		if pkgName != "" && metadata.pkg != pkgName {
+			return fmt.Errorf("multiple packages found: %s and %s", pkgName, metadata.pkg)
 		}
-		pkgName = pkg
+		pkgName = metadata.pkg
 
-		if isCgo {
+		if metadata.isCgo {
 			// add to cgo file list
-			cgoSrcs = append(cgoSrcs, in)
+			srcInBase := strings.TrimSuffix(filepath.Base(out), ".cgo1.go") + ".go"
+			srcIn := filepath.Join(srcDir, srcInBase)
+			if err := ioutil.WriteFile(srcIn, data, 0644); err != nil {
+				return err
+			}
+			cgoSrcs = append(cgoSrcs, srcInBase)
+			cgoOuts = append(cgoOuts, out)
 		} else {
 			// Non cgo file, copy the go and fake the c
 			if err := ioutil.WriteFile(out, data, 0644); err != nil {
@@ -186,11 +166,12 @@ func run(args []string) error {
 	if len(cgoSrcs) == 0 {
 		// If there were no cgo sources present, generate a minimal cgo input
 		// This is so we can still run the cgo tool to build all the other outputs
-		nullCgo := filepath.Join(objdir, "_cgo_empty.go")
-		cgoSrcs = append(cgoSrcs, nullCgo)
+		nullCgoBase := "_cgo_empty.go"
+		nullCgo := filepath.Join(srcDir, nullCgoBase)
 		if err := ioutil.WriteFile(nullCgo, []byte("package "+pkgName+"\n/*\n*/\nimport \"C\"\n"), 0644); err != nil {
 			return err
 		}
+		cgoSrcs = append(cgoSrcs, nullCgoBase)
 	}
 
 	// Tokenize copts. cc_library does this automatically, but cgo does not,
@@ -204,14 +185,7 @@ func run(args []string) error {
 		copts = append(copts, args...)
 	}
 
-	// Add the absoulute path to the c compiler to the environment
-	if abs, err := filepath.Abs(cc); err == nil {
-		cc = abs
-	}
-	env = append(env, fmt.Sprintf("CC=%s", cc))
-	env = append(env, fmt.Sprintf("CXX=%s", cc))
-
-	goargs := []string{"tool", "cgo", "-objdir", objdir}
+	goargs := []string{"tool", "cgo", "-srcdir", srcDir, "-objdir", objDir}
 	goargs = append(goargs, copts...)
 	goargs = append(goargs, cgoSrcs...)
 	cmd := exec.Command(goenv.Go, goargs...)
@@ -220,6 +194,12 @@ func run(args []string) error {
 	cmd.Env = env
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("error running cgo: %v", err)
+	}
+	// Now we fix up the generated files
+	for _, src := range cgoOuts {
+		if err := fixupLineComments(src); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -268,6 +248,26 @@ func splitQuoted(s string) (r []string, err error) {
 		err = errors.New("unfinished escaping")
 	}
 	return args, err
+}
+
+// removes the abs prefix from //line comments to make source files reproducable
+func fixupLineComments(filename string) error {
+	const linePrefix = "//line "
+	trim := linePrefix + abs(".")
+	body, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(body), "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, trim) {
+			lines[i] = linePrefix + line[len(trim)+1:]
+		}
+	}
+	if err := ioutil.WriteFile(filename, []byte(strings.Join(lines, "\n")), 0666); err != nil {
+		return err
+	}
+	return nil
 }
 
 func main() {

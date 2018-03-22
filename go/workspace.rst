@@ -11,7 +11,6 @@ Go workspace rules
 .. _go_library: core.rst#go_library
 .. _toolchains: toolchains.rst
 .. _go_register_toolchains: toolchains.rst#go_register_toolchains
-.. _go_sdk: toolchains.rst#go_sdk
 .. _go_toolchain: toolchains.rst#go_toolchain
 .. _new_go_repository: deprecated.rst#new_go_repository
 .. _go_repositories: deprecated.rst#go_repositories
@@ -82,7 +81,7 @@ put the call at the bottom of your WORKSPACE. For example:
 
 .. code:: bzl
 
-  go_repository,
+  go_repository(
       name = "org_golang_x_net",
       commit = "0744d001aa8470aaa53df28d32e5ceeb8af9bd70",
       importpath = "golang.org/x/net",
@@ -190,9 +189,18 @@ once gazelle_ fully supports flat build files.
 | * :value:`"on"` : always run gazelle, even if build files are already present.                   |
 | * :value:`"auto"` : run gazelle only if there is no root build file.                             |
 +--------------------------------+-----------------------------+-----------------------------------+
-| :param:`build_tags`            | :type:`string_list`         | :value:``                         |
+| :param:`build_tags`            | :type:`string_list`         | :value:`""`                       |
 +--------------------------------+-----------------------------+-----------------------------------+
 | The set of tags to pass to gazelle when generating build files.                                  |
++--------------------------------+-----------------------------+-----------------------------------+
+| :param:`build_file_proto_mode` | :type:`string`              | :value:`default`                  |
++--------------------------------+-----------------------------+-----------------------------------+
+| How Gazelle should generate proto rules.                                                         |
+|                                                                                                  |
+| * :value:`"default"` : generate ``proto_library`` and ``go_proto_library`` rules, ignore         |
+|   .pb.go files.                                                                                  |
+| * :value:`"disable"` : ignore .proto files. Treat .pb.go files as normal sources.                |
+| * :value:`"legacy"` : generate ``filegroup`` rules for .proto files.                             |
 +--------------------------------+-----------------------------+-----------------------------------+
 
 Example
@@ -226,4 +234,19 @@ repository is renamed.
       urls = ["https://codeload.github.com/golang/tools/zip/663269851cdddc898f963782f74ea574bcd5c814"],
       strip_prefix = "tools-663269851cdddc898f963782f74ea574bcd5c814",
       type = "zip",
+  )
+
+The following fetches the same package, but using git without import redirection.
+This is also the same method you would use for private git repositories.
+
+.. code:: bzl
+
+  load("@io_bazel_rules_go//go:def.bzl", "go_repository")
+
+  go_repository(
+      name = "org_golang_x_tools",
+      importpath = "golang.org/x/tools",
+      remote = "git@github.com:golang/tools.git",
+      vcs = "git",
+      commit = "663269851cdddc898f963782f74ea574bcd5c814",
   )

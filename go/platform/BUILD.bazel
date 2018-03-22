@@ -1,29 +1,12 @@
+# This file declares a config_setting for each platform supported by the
+# Go SDK. These rules follow a goos_goarch naming convention, for example,
+# //go/platform:linux_amd64
+#
+# These can be used in select expressions to choose platform-specifc
+# sources and dependencies.
+
 package(default_visibility = ["//visibility:public"])
 
-# This file declares a config_setting for each supported platform.
-# These can be used in calls to select to choose platform-specific sources
-# and dependencies.
-#
-# Eventually, we hope to be able to use platform or constraint_value instead,
-# but Bazel doesn't support this yet.
+load(":list.bzl", "declare_config_settings")
 
-config_setting(
-    name = "darwin_amd64",
-    values = {
-        "cpu": "darwin",
-    },
-)
-
-config_setting(
-    name = "linux_amd64",
-    values = {
-        "cpu": "k8",
-    },
-)
-
-config_setting(
-    name = "windows_amd64",
-    values = {
-        "cpu": "x64_windows",
-    },
-)
+declare_config_settings()

@@ -215,7 +215,7 @@ def go_proto_library(name, srcs = None, deps = None,
                      has_services = 0,
                      testonly = 0, visibility = None,
                      ignore_go_package_option = 0,
-                     protoc = "@com_github_google_protobuf//:protoc",
+                     protoc = "@com_google_protobuf//:protoc",
                      protoc_gen_go = "@com_github_golang_protobuf//protoc-gen-go",
                      x_net_context = "@org_golang_x_net//context:go_default_library",
                      google_grpc = "@org_golang_google_grpc//:go_default_library",
@@ -250,6 +250,7 @@ def go_proto_library(name, srcs = None, deps = None,
                                          internal tests to work.
     **kwargs: any other args which are passed through to the underlying go_library
   """
+  print("DEPRECATED: proto:go_proto_library.bzl#go_proto_library is no longer supported, please use proto:def.bzl#go_proto_library")
   if not name:
     fail("name is required", "name")
   if not srcs:

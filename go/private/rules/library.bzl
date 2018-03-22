@@ -12,66 +12,55 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@io_bazel_rules_go//go/private:common.bzl",
-    "go_filetype",
-    "go_importpath",
-    "RACE_MODE",
-    "NORMAL_MODE",
+load(
+    "@io_bazel_rules_go//go/private:context.bzl",
+    "go_context",
 )
-load("@io_bazel_rules_go//go/private:providers.bzl",
-    "CgoInfo",
+load(
+    "@io_bazel_rules_go//go/private:providers.bzl",
     "GoLibrary",
-    "GoEmbed",
-    "get_library",
 )
-load("@io_bazel_rules_go//go/private:rules/prefix.bzl",
+load(
+    "@io_bazel_rules_go//go/private:rules/prefix.bzl",
     "go_prefix_default",
+)
+load(
+    "@io_bazel_rules_go//go/private:rules/rule.bzl",
+    "go_rule",
 )
 
 def _go_library_impl(ctx):
   """Implements the go_library() rule."""
-  go_toolchain = ctx.toolchains["@io_bazel_rules_go//go:toolchain"]
-  embed = ctx.attr.embed
-  if ctx.attr.library:
-    embed = embed + [ctx.attr.library]
-  cgo_info = ctx.attr.cgo_info[CgoInfo] if ctx.attr.cgo_info else None
-  golib, goembed = go_toolchain.actions.library(ctx,
-      go_toolchain = go_toolchain,
-      srcs = ctx.files.srcs,
-      deps = ctx.attr.deps,
-      cgo_info = cgo_info,
-      embed = embed,
-      want_coverage = ctx.coverage_instrumented(),
-      importpath = go_importpath(ctx),
-  )
-  cgo_exports = ctx.attr.cgo_info[CgoInfo].exports if ctx.attr.cgo_info else depset()
+  go = go_context(ctx)
+  library = go.new_library(go)
+  source = go.library_to_source(go, ctx.attr, library, ctx.coverage_instrumented())
+  archive = go.archive(go, source)
 
   return [
-      golib, goembed,
+      library, source, archive,
       DefaultInfo(
-          files = depset([get_library(golib, NORMAL_MODE)]),
-          runfiles = golib.runfiles,
+          files = depset([archive.data.file]),
       ),
       OutputGroupInfo(
-          race = depset([get_library(golib, RACE_MODE)]),
-          cgo_exports = cgo_exports,
+          cgo_exports = archive.cgo_exports,
       ),
   ]
 
-go_library = rule(
+go_library = go_rule(
     _go_library_impl,
     attrs = {
-        "data": attr.label_list(allow_files = True, cfg = "data"),
+        "data": attr.label_list(
+            allow_files = True,
+            cfg = "data",
+        ),
         "srcs": attr.label_list(allow_files = True),
         "deps": attr.label_list(providers = [GoLibrary]),
         "importpath": attr.string(),
-        "library": attr.label(providers = [GoLibrary]),
-        "embed": attr.label_list(providers = [GoEmbed]),
+        "importmap": attr.string(),
+        "embed": attr.label_list(providers = [GoLibrary]),
         "gc_goopts": attr.string_list(),
-        "cgo_info": attr.label(providers = [CgoInfo]),
+        "x_defs": attr.string_dict(),
         "_go_prefix": attr.label(default = go_prefix_default),
-        "_go_toolchain_flags": attr.label(default=Label("@io_bazel_rules_go//go/private:go_toolchain_flags")),
     },
-    toolchains = ["@io_bazel_rules_go//go:toolchain"],
 )
 """See go/core.rst#go_library for full documentation."""

@@ -12,29 +12,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@io_bazel_rules_go//go/private:actions/action.bzl",
-    "action_with_go_env",
+load(
+    "@io_bazel_rules_go//go/private:common.bzl",
+    "sets",
+)
+load("@io_bazel_rules_go//go/private:mode.bzl",
+    "LINKMODE_C_SHARED",
 )
 
-def emit_asm(ctx, go_toolchain,
+def emit_asm(go,
     source = None,
-    hdrs = [],
-    out_obj = None):
+    hdrs = []):
   """See go/toolchains.rst#asm for full documentation."""
 
   if source == None: fail("source is a required parameter")
-  if out_obj == None: fail("out_obj is a required parameter")
-  includes = depset()
-  includes += [f.dirname for f in hdrs]
-  includes += [f.dirname for f in go_toolchain.data.headers.cc.transitive_headers]
-  inputs = hdrs + list(go_toolchain.data.headers.cc.transitive_headers) + [source]
-  asm_args = [source.path, "-o", out_obj.path]
-  for inc in includes:
-    asm_args += ["-I", inc]
-  action_with_go_env(ctx, go_toolchain,
-      inputs = list(inputs),
+
+  out_obj = go.declare_file(go, path=source.basename[:-2], ext=".o")
+  includes = sets.union(
+      [go.stdlib.root_file.dirname + "/pkg/include"],
+      [f.dirname for f in hdrs])
+  inputs = hdrs + go.stdlib.files + [source]
+
+  asm_args = go.args(go)
+  asm_args.add(["-o", out_obj, "-trimpath", "."])
+  if go.mode.link == LINKMODE_C_SHARED:
+    asm_args.add("-shared")
+  asm_args.add(includes, before_each="-I")
+  asm_args.add(source.path)
+  go.actions.run(
+      inputs = inputs,
       outputs = [out_obj],
       mnemonic = "GoAsmCompile",
-      executable = go_toolchain.tools.asm,
-      arguments = asm_args,
+      executable = go.builders.asm,
+      arguments = [asm_args],
+      env = go.env,
   )
+  return out_obj

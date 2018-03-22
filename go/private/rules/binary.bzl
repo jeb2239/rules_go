@@ -12,105 +12,168 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@io_bazel_rules_go//go/private:common.bzl",
-    "compile_modes",
-    "go_filetype",
-    "go_importpath",
-    "NORMAL_MODE",
-    "RACE_MODE",
+load(
+    "@io_bazel_rules_go//go/private:context.bzl",
+    "go_context",
 )
-load("@io_bazel_rules_go//go/private:rules/prefix.bzl",
+load(
+    "@io_bazel_rules_go//go/private:common.bzl",
+    "go_filetype",
+)
+load(
+    "@io_bazel_rules_go//go/private:rules/prefix.bzl",
     "go_prefix_default",
 )
-load("@io_bazel_rules_go//go/private:providers.bzl",
-    "CgoInfo",
+load(
+    "@io_bazel_rules_go//go/private:rules/aspect.bzl",
+    "go_archive_aspect",
+)
+load(
+    "@io_bazel_rules_go//go/private:rules/rule.bzl",
+    "go_rule",
+)
+load(
+    "@io_bazel_rules_go//go/private:providers.bzl",
     "GoLibrary",
-    "GoBinary",
-    "GoEmbed",
+)
+load(
+    "@io_bazel_rules_go//go/platform:list.bzl",
+    "GOOS",
+    "GOARCH",
+)
+load(
+    "@io_bazel_rules_go//go/private:mode.bzl",
+    "LINKMODE_NORMAL",
+    "LINKMODES",
 )
 
 def _go_binary_impl(ctx):
   """go_binary_impl emits actions for compiling and linking a go executable."""
-  if "@io_bazel_rules_go//go:toolchain" in ctx.toolchains:
-    go_toolchain = ctx.toolchains["@io_bazel_rules_go//go:toolchain"]
-  else:
-    go_toolchain = ctx.toolchains["@io_bazel_rules_go//go:bootstrap_toolchain"]
-  embed = ctx.attr.embed
-  if ctx.attr.library:
-    embed = embed + [ctx.attr.library]
+  go = go_context(ctx)
+  if ctx.attr.linkstamp:
+    print("DEPRECATED: linkstamp, please use x_def for all stamping now {}".format(ctx.attr.linkstamp))
 
-  cgo_info = ctx.attr.cgo_info[CgoInfo] if ctx.attr.cgo_info else None
-  golib, gobinary = go_toolchain.actions.binary(ctx, go_toolchain,
-      name = ctx.label.name,
-      importpath = go_importpath(ctx),
-      srcs = ctx.files.srcs,
-      deps = ctx.attr.deps,
-      cgo_info = cgo_info,
-      embed = embed,
+  library = go.new_library(go, importable=False)
+  source = go.library_to_source(go, ctx.attr, library, ctx.coverage_instrumented())
+  name = ctx.attr.basename
+  if not name:
+    name = ctx.label.name
+  executable = None
+  if ctx.attr.out:
+    # Use declare_file instead of attr.output(). When users set output files
+    # directly, Bazel warns them not to use the same name as the rule, which is
+    # the common case with go_binary.
+    executable = ctx.actions.declare_file(ctx.attr.out)
+  archive, executable = go.binary(go,
+      name = name,
+      source = source,
       gc_linkopts = gc_linkopts(ctx),
-      x_defs = ctx.attr.x_defs,
-      default = ctx.outputs.executable,
+      linkstamp = ctx.attr.linkstamp,
+      version_file = ctx.version_file,
+      info_file = ctx.info_file,
+      executable = executable,
   )
   return [
-      golib, gobinary,
-      DefaultInfo(
-          files = depset([gobinary.default]),
-          runfiles = golib.runfiles,
-      ),
+      library, source, archive,
       OutputGroupInfo(
-          normal = depset([gobinary.normal]),
-          static = depset([gobinary.static]),
-          race = depset([gobinary.race]),
+          cgo_exports = archive.cgo_exports,
+      ),
+      DefaultInfo(
+          files = depset([executable]),
+          runfiles = archive.runfiles,
+          executable = executable,
       ),
   ]
 
-go_binary = rule(
+go_binary = go_rule(
     _go_binary_impl,
     attrs = {
+        "basename": attr.string(),
         "data": attr.label_list(
             allow_files = True,
             cfg = "data",
         ),
         "srcs": attr.label_list(allow_files = go_filetype),
-        "deps": attr.label_list(providers = [GoLibrary]),
-        "importpath": attr.string(),
-        "library": attr.label(providers = [GoLibrary]),
-        "embed": attr.label_list(providers = [GoEmbed]),
+        "deps": attr.label_list(
+            providers = [GoLibrary],
+            aspects = [go_archive_aspect],
+        ),
+        "embed": attr.label_list(
+            providers = [GoLibrary],
+            aspects = [go_archive_aspect],
+        ),
+        "pure": attr.string(
+            values = [
+                "on",
+                "off",
+                "auto",
+            ],
+            default = "auto",
+        ),
+        "static": attr.string(
+            values = [
+                "on",
+                "off",
+                "auto",
+            ],
+            default = "auto",
+        ),
+        "race": attr.string(
+            values = [
+                "on",
+                "off",
+                "auto",
+            ],
+            default = "auto",
+        ),
+        "msan": attr.string(
+            values = [
+                "on",
+                "off",
+                "auto",
+            ],
+            default = "auto",
+        ),
+        "goos": attr.string(
+            values = GOOS.keys() + ["auto"],
+            default = "auto",
+        ),
+        "goarch": attr.string(
+            values = GOARCH.keys() + ["auto"],
+            default = "auto",
+        ),
         "gc_goopts": attr.string_list(),
         "gc_linkopts": attr.string_list(),
         "linkstamp": attr.string(),
         "x_defs": attr.string_dict(),
-        "cgo_info": attr.label(providers = [CgoInfo]),
-        "_go_prefix": attr.label(default = go_prefix_default),
-        "_go_toolchain_flags": attr.label(default=Label("@io_bazel_rules_go//go/private:go_toolchain_flags")),
+        "linkmode": attr.string(values=LINKMODES, default=LINKMODE_NORMAL),
+        "out": attr.string(),
     },
     executable = True,
-    toolchains = ["@io_bazel_rules_go//go:toolchain"],
 )
 """See go/core.rst#go_binary for full documentation."""
 
-go_tool_binary = rule(
+go_tool_binary = go_rule(
     _go_binary_impl,
+    bootstrap = True,
     attrs = {
+        "basename": attr.string(),
         "data": attr.label_list(
             allow_files = True,
             cfg = "data",
         ),
         "srcs": attr.label_list(allow_files = go_filetype),
         "deps": attr.label_list(providers = [GoLibrary]),
-        "importpath": attr.string(),
-        "library": attr.label(providers = [GoLibrary]),
-        "embed": attr.label_list(providers = [GoEmbed]),
+        "embed": attr.label_list(providers = [GoLibrary]),
         "gc_goopts": attr.string_list(),
         "gc_linkopts": attr.string_list(),
         "linkstamp": attr.string(),
         "x_defs": attr.string_dict(),
-        "cgo_info": attr.label(providers = [CgoInfo]),
-        "_go_prefix": attr.label(default = go_prefix_default),
-        "_go_toolchain_flags": attr.label(default=Label("@io_bazel_rules_go//go/private:go_toolchain_flags")),
+        "linkmode": attr.string(values=LINKMODES, default=LINKMODE_NORMAL),
+        "out": attr.string(),
+        "_hostonly": attr.bool(default=True),
     },
     executable = True,
-    toolchains = ["@io_bazel_rules_go//go:bootstrap_toolchain"],
 )
 """
 This is used instead of `go_binary` for tools that are executed inside

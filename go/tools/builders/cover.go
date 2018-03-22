@@ -30,14 +30,15 @@ func run(args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
+	if err := goenv.update(); err != nil {
+		return err
+	}
 	goargs := []string{"tool", "cover"}
 	goargs = append(goargs, flags.Args()...)
-	env := os.Environ()
-	env = append(env, goenv.Env()...)
 	cmd := exec.Command(goenv.Go, goargs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = env
+	cmd.Env = goenv.Env()
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("error running cover: %v", err)
 	}

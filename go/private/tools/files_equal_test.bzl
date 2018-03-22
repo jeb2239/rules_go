@@ -18,7 +18,7 @@
 def _impl(ctx):
   if ctx.file.golden == ctx.file.actual:
     fail("GOLDEN and ACTUAL should be different files")
-  ctx.file_action(
+  ctx.actions.write(
       output=ctx.outputs.executable,
       content="\n".join([
           "#!/bin/bash",
@@ -43,7 +43,7 @@ def _impl(ctx):
           "  exit 1",
           "fi",
       ]),
-      executable=True)
+      is_executable=True)
   return struct(runfiles=ctx.runfiles([ctx.file.golden,
                                        ctx.file.actual]))
 
@@ -59,13 +59,17 @@ files_equal_test = rule(
         "golden": attr.label(
             mandatory = True,
             allow_files = True,
-            single_file = True),
+            single_file = True,
+        ),
         "actual": attr.label(
             mandatory = True,
             allow_files = True,
-            single_file = True),
+            single_file = True,
+        ),
         "error_message": attr.string(
-            default="FILES DO NOT HAVE EQUAL CONTENTS"),
+            default = "FILES DO NOT HAVE EQUAL CONTENTS",
+        ),
     },
+    test = True,
     implementation = _impl,
-    test = True)
+)

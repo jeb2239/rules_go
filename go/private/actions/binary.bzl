@@ -12,73 +12,45 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@io_bazel_rules_go//go/private:common.bzl",
-    "link_modes",
-    "NORMAL_MODE",
-    "RACE_MODE",
-    "STATIC_MODE",
+load(
+    "@io_bazel_rules_go//go/private:mode.bzl",
+    "LINKMODE_C_SHARED",
+    "LINKMODE_C_ARCHIVE",
 )
-load("@io_bazel_rules_go//go/private:providers.bzl",
-    "GoBinary",
+load(
+    "@io_bazel_rules_go//go/private:common.bzl",
+    "ARCHIVE_EXTENSION",
 )
 
-def emit_binary(ctx, go_toolchain,
-    name="",
-    importpath = "",
-    srcs = (),
-    deps = (),
-    golibs = (),
-    cgo_info = None,
-    embed = (),
-    gc_linkopts = (),
-    x_defs = {},
-    default = None):
+def emit_binary(go,
+    name = "",
+    source = None,
+    gc_linkopts = [],
+    linkstamp = None,
+    version_file = None,
+    info_file = None,
+    executable = None):
   """See go/toolchains.rst#binary for full documentation."""
 
-  if name == "": fail("name is a required parameter")
+  if name == "" and executable == None:
+    fail("either name or executable must be set")
 
-  golib, _ = go_toolchain.actions.library(ctx,
-      go_toolchain = go_toolchain,
-      srcs = srcs,
-      deps = deps,
-      cgo_info = cgo_info,
-      embed = embed,
-      importpath = importpath,
-      importable = False,
-      golibs = golibs,
+  archive = go.archive(go, source)
+  if not executable:
+    extension = go.exe_extension
+    if go.mode.link == LINKMODE_C_SHARED:
+      name = "lib" + name # shared libraries need a "lib" prefix in their name
+      extension = go.shared_extension
+    elif go.mode.link == LINKMODE_C_ARCHIVE:
+      extension = ARCHIVE_EXTENSION
+    executable = go.declare_file(go, name=name, ext=extension)
+  go.link(go,
+      archive=archive,
+      executable=executable,
+      gc_linkopts=gc_linkopts,
+      linkstamp=linkstamp,
+      version_file=version_file,
+      info_file=info_file,
   )
 
-  executables = {}
-  extension = "" # TODO: .exe on windows
-
-  if default:
-    executables["default"] = default
-
-  for mode in link_modes:
-    executable = ctx.new_file(name + "." + mode + extension)
-    executables[mode] = executable
-
-  for mode, executable in executables.items():
-    if mode == "default":
-        # work out what the default mode should be
-        if "race" in ctx.features:
-            mode = RACE_MODE
-        elif "static" in ctx.features:
-            mode = STATIC_MODE
-        else:
-            mode = NORMAL_MODE
-
-    go_toolchain.actions.link(
-        ctx,
-        go_toolchain = go_toolchain,
-        library=golib,
-        mode=mode,
-        executable=executable,
-        gc_linkopts=gc_linkopts,
-        x_defs=x_defs,
-    )
-
-  return [
-      golib,
-      GoBinary(**executables),
-  ]
+  return archive, executable

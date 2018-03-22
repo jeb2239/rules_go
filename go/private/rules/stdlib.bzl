@@ -12,31 +12,64 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@io_bazel_rules_go//go/private:providers.bzl",
+load(
+    "@io_bazel_rules_go//go/private:providers.bzl",
     "GoStdLib",
 )
+load(
+    "@io_bazel_rules_go//go/private:context.bzl",
+    "go_context",
+)
+load(
+    "@io_bazel_rules_go//go/private:rules/rule.bzl",
+    "go_rule",
+)
+load(
+    "@io_bazel_rules_go//go/private:mode.bzl",
+    "LINKMODE_C_SHARED",
+)
+
+def _stdlib_library_to_source(go, attr, source, merge):
+  pkg = go.declare_directory(go, "pkg")
+  root_file = go.declare_file(go, "ROOT")
+  files = [root_file, go.go, pkg]
+  args = go.args(go)
+  args.add(["-out", root_file.dirname])
+  if go.mode.race:
+    args.add("-race")
+  if go.mode.link == LINKMODE_C_SHARED:
+    args.add("-shared")
+  go.actions.write(root_file, "")
+  go.actions.run(
+      inputs = go.sdk_files + go.sdk_tools + go.crosstool + [go.package_list, root_file],
+      outputs = [pkg],
+      mnemonic = "GoStdlib",
+      executable = attr._stdlib_builder.files.to_list()[0],
+      arguments = [args],
+      env = go.env,
+  )
+  source["stdlib"] = GoStdLib(
+      root_file = root_file,
+      mode = go.mode,
+      libs = [pkg],
+      headers = [pkg],
+      files = files,
+  )
 
 def _stdlib_impl(ctx):
-  return [
-      DefaultInfo(
-          files = depset(ctx.files.libs),
-      ),
-      GoStdLib(
-          root_file = ctx.file._root_file,
-          goos = ctx.attr.goos,
-          goarch = ctx.attr.goarch,
-          libs = ctx.files.libs,
-          cgo = ctx.attr.cgo,
-      ),
-  ]
+  go = go_context(ctx)
+  library = go.new_library(go, resolver = _stdlib_library_to_source)
+  source = go.library_to_source(go, ctx.attr, library, False)
+  return [source, library]
 
-stdlib = rule(
+stdlib = go_rule(
     _stdlib_impl,
+    bootstrap = True,
     attrs = {
-        "goos": attr.string(mandatory = True),
-        "goarch": attr.string(mandatory = True),
-        "cgo": attr.bool(mandatory = True),
-        "libs": attr.label_list(allow_files = True),
-        "_root_file": attr.label(allow_files = True, single_file = True, default="@go_sdk//:root_file"),
+        "_stdlib_builder": attr.label(
+            executable = True,
+            cfg = "host",
+            default = Label("@io_bazel_rules_go//go/tools/builders:stdlib"),
+        ),
     },
 )

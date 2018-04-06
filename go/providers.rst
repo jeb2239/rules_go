@@ -6,11 +6,13 @@ Go providers
 .. _go_library: core.rst#go_library
 .. _go_binary: core.rst#go_binary
 .. _go_test: core.rst#go_test
+.. _go_path: core.rst#go_path
 .. _cc_library: https://docs.bazel.build/versions/master/be/c-cpp.html#cc_library
 .. _flatbuffers: http://google.github.io/flatbuffers/
 .. _static linking: modes.rst#building-static-binaries
 .. _race detector: modes.rst#using-the-race-detector
 .. _runfiles: https://docs.bazel.build/versions/master/skylark/lib/runfiles.html
+.. _File: https://docs.bazel.build/versions/master/skylark/lib/File.html
 
 .. role:: param(kbd)
 .. role:: type(emphasis)
@@ -272,3 +274,40 @@ This is used when compiling and linking dependant libraries or binaries.
 +--------------------------------+-----------------------------------------------------------------+
 | The files needed to run anything that includes this library.                                     |
 +--------------------------------+-----------------------------------------------------------------+
+
+GoPath
+~~~~~~
+
+GoPath is produced by the `go_path`_ rule. It gives a list of packages used to
+build the ``go_path`` directory and provides a list of original files for
+each package.
+
++--------------------------------+-----------------------------------------------------------------+
+| **Name**                       | **Type**                                                        |
++--------------------------------+-----------------------------------------------------------------+
+| :param:`gopath`                | :type:`string`                                                  |
++--------------------------------+-----------------------------------------------------------------+
+| The short path to the output file or directory. Useful for constructing                          |
+| ``runfiles`` paths.                                                                              |
++--------------------------------+-----------------------------------------------------------------+
+| :param:`gopath_file`           | :type:`File`                                                    |
++--------------------------------+-----------------------------------------------------------------+
+| A Bazel File_ that points to the output directory.                                               |
+|                                                                                                  |
+| * In ``archive`` mode, this is the archive.                                                      |
+| * In ``copy`` mode, this is the output directory.                                                |
+| * In ``link`` mode, this is an empty file inside the output directory, so                        |
+|   you need to use .dirname to get the path to the directory.                                     |
++--------------------------------+-----------------------------------------------------------------+
+| :param:`packages`              | :type:`list of struct`                                          |
++--------------------------------+-----------------------------------------------------------------+
+| A list of structs representing packages used to build the ``go_path``                            |
+| directory. Each struct has the following fields:                                                 |
+|                                                                                                  |
+| * ``importpath``: the import path of the package.                                                |
+| * ``dir``: the subdirectory of the package within the ``go_path``, including                     |
+|   the ``src/`` prefix. May different from ``importpath`` due to vendoring.                       |
+| * ``srcs``: list of source ``File``s.                                                            |
+| * ``data``: list of data ``File``s.                                                              |
++--------------------------------+-----------------------------------------------------------------+
+

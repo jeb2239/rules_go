@@ -46,7 +46,7 @@ def _go_repository_tools_impl(ctx):
   # and thus requires the gazelle we build in here to generate it's BUILD files
   # The commit used here should match the one in repositories.bzl
   ctx.download_and_extract(
-      url = "http://localhost:5000/tools-" + x_tools_commit+".zip",
+      url = "https://codeload.github.com/golang/tools/zip/" + x_tools_commit,
       type = "zip",
   )
 
